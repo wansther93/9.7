@@ -96,19 +96,23 @@ export const CollectionAnimeModal: React.FC<CollectionAnimeModalProps> = ({
       if (persisted.bannerUrl && !anime.bannerUrl) setBannerUrl(persisted.bannerUrl);
       if (persisted.trailerUrl && !anime.trailerUrl) setTrailerUrl(persisted.trailerUrl);
 
-      // Metadados já existentes na coleção: exibe instantaneamente em 0ms sem disparar nenhuma nova requisição
       setLoadingStreaming(false);
       setLoadingCharacters(false);
       setLoadingThemes(false);
       setLoadingRecommendations(false);
-      return;
+
+      // Se já possui todos os dados ricos completos (personagens e músicas), entrega instantâneo em 0ms
+      const isFullyLoaded = (persisted.characters && persisted.characters.length > 0) && (persisted.themes && persisted.themes.length > 0);
+      if (isFullyLoaded) {
+        return;
+      }
     }
 
-    // 2. Se for um anime novo sem metadados salvos, busca uma única vez sem forçar refresh agressivo
-    setLoadingStreaming(true);
-    setLoadingCharacters(true);
-    setLoadingThemes(true);
-    setLoadingRecommendations(true);
+    // 2. Se for um anime novo ou com dados incompletos, busca consolidada oficial
+    setLoadingStreaming(!persisted?.streamingLinks?.length);
+    setLoadingCharacters(!persisted?.characters?.length);
+    setLoadingThemes(!persisted?.themes?.length);
+    setLoadingRecommendations(!persisted?.recommendations?.length);
 
     getOrFetchAnimeRichData(anime, false)
       .then((data) => {

@@ -44,7 +44,7 @@ import type { Anime, AnimeFormData, AnimeSeasonOrArc, AnimeStatus } from '../typ
 import { STATUS_CONFIG } from '../types';
 import { isAiringToday, isAnimeActiveAndAiringToday } from '../lib/dateUtils';
 import { fetchAnimeThemesMedia, type AnimeThemeMedia } from '../services/animeThemesService';
-import { getPersistedAnimeRichData, savePersistedAnimeRichData } from '../services/animeMetadataService';
+import { getPersistedAnimeRichData, savePersistedAnimeRichData, getOrFetchAnimeRichData } from '../services/animeMetadataService';
 import {
   getAnimeCharacters,
   getAnimeThemes,
@@ -213,23 +213,41 @@ export const AnimeDetailModal: React.FC<AnimeDetailModalProps> = ({
       if (!isMounted) return;
 
       try {
-        const [chars, ths, recs, streams, themeMedia, bannersFromFranchise] = await Promise.all([
-          getAnimeCharacters(resolvedMalId || 0, anime.title),
-          getAnimeThemes(resolvedMalId || 0, anime.title),
-          getAnimeRecommendations(resolvedMalId || 0, anime.title),
-          getAnimeStreamingLinks(resolvedMalId || 0, anime.title),
-          fetchAnimeThemesMedia(anime.title, resolvedMalId || undefined),
-          getAnimeBannersGallery(resolvedMalId || 0, anime.title),
+        // 1. Tenta carregar dados ricos imediatamente em 0ms se já existirem
+        const persisted = getPersistedAnimeRichData(anime);
+        if (persisted) {
+          if (persisted.characters?.length) setCharacters(persisted.characters);
+          if (persisted.themes?.length) setMediaThemes(persisted.themes);
+          if (persisted.streamingLinks?.length) setStreamingLinks(persisted.streamingLinks);
+          if (persisted.recommendations?.length) setRecommendations(persisted.recommendations);
+          if (persisted.bannerUrl && !dynamicBanner) setDynamicBanner(persisted.bannerUrl);
+          setLoadingPortalExtras(false);
+          return;
+        }
+
+        // 2. Busca consolidada ultra-rápida (AniList GraphQL Super-Pacote + AnimeThemes + Fallback seguro)
+        const [richData, textThemesRes, bannersRes] = await Promise.allSettled([
+          getOrFetchAnimeRichData({ ...anime, mal_id: resolvedMalId || anime.mal_id }, false),
+          getAnimeThemes(resolvedMalId || 0, anime.title).catch(() => ({ open: [], end: [] })),
+          getAnimeBannersGallery(resolvedMalId || 0, anime.title).catch(() => []),
         ]);
 
         if (!isMounted) return;
-        setCharacters(chars);
-        setThemes(ths);
-        setMediaThemes(themeMedia);
-        setRecommendations(recs);
-        setStreamingLinks(streams);
 
-        // Agrupa estritamente banners da própria obra (o salvo originalmente + mídias da franquia oficial)
+        if (richData.status === 'fulfilled' && richData.value) {
+          const rd = richData.value;
+          if (rd.characters?.length) setCharacters(rd.characters);
+          if (rd.themes?.length) setMediaThemes(rd.themes);
+          if (rd.streamingLinks?.length) setStreamingLinks(rd.streamingLinks);
+          if (rd.recommendations?.length) setRecommendations(rd.recommendations);
+          if (rd.bannerUrl && !dynamicBanner) setDynamicBanner(rd.bannerUrl);
+        }
+
+        if (textThemesRes.status === 'fulfilled' && textThemesRes.value) {
+          setThemes(textThemesRes.value as any);
+        }
+
+        const bannersFromFranchise = bannersRes.status === 'fulfilled' && Array.isArray(bannersRes.value) ? bannersRes.value : [];
         const combinedBanners = [
           ...(anime.bannerUrl ? [anime.bannerUrl] : []),
           ...bannersFromFranchise,
@@ -242,20 +260,6 @@ export const AnimeDetailModal: React.FC<AnimeDetailModalProps> = ({
             updateAnime(anime.id, { bannerUrl: combinedBanners[0] }).catch(() => {});
           }
         }
-
-        // Salva no armazém central compartilhado para a Coleção Completa usar em 0ms sem novas requisições
-        savePersistedAnimeRichData(
-          { mal_id: resolvedMalId || anime.mal_id, id: anime.id, title: anime.title },
-          {
-            streamingLinks: streams,
-            characters: chars,
-            themes: themeMedia,
-            recommendations: recs,
-            trailerUrl: anime.trailerUrl || null,
-            bannerUrl: combinedBanners[0] || anime.bannerUrl || null,
-            mal_id: resolvedMalId || anime.mal_id || null,
-          }
-        );
       } catch (err) {
         console.warn('Erro ao carregar extras do anime:', err);
       } finally {
