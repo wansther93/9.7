@@ -30,6 +30,7 @@ import {
   getPersistedAnimeRichData,
   getOrFetchAnimeRichData,
   isAnimeRichDataIncomplete,
+  isAnimeRichDataStale,
 } from '../../services/animeMetadataService';
 
 interface CollectionAnimeModalProps {
@@ -101,14 +102,35 @@ export const CollectionAnimeModal: React.FC<CollectionAnimeModalProps> = ({
       setLoadingThemes(false);
       setLoadingRecommendations(false);
 
-      // Se já possui todos os dados ricos completos (personagens e músicas), entrega instantâneo em 0ms
+      // Se já possui todos os dados ricos completos (personagens e músicas) e está fresco (<12h), entrega instantâneo em 0ms
       const isFullyLoaded = (persisted.characters && persisted.characters.length > 0) && (persisted.themes && persisted.themes.length > 0);
-      if (isFullyLoaded) {
+      const isCacheFresh = !isAnimeRichDataStale(persisted);
+      if (isFullyLoaded && isCacheFresh) {
         return;
       }
     }
 
-    // 2. Se for um anime novo ou com dados incompletos, busca consolidada oficial
+    // Escuta atualizações de segundo plano para renovar o modal em tempo real sem travar a tela
+    const handleRichDataUpdated = (e: Event) => {
+      const custom = e as CustomEvent;
+      const detail = custom.detail;
+      if (!isMounted || !detail?.data) return;
+      const matchesMalId = detail.mal_id && anime.mal_id && detail.mal_id === anime.mal_id;
+      const matchesTitle = detail.title && anime.title && detail.title.toLowerCase().trim() === anime.title.toLowerCase().trim();
+      if (matchesMalId || matchesTitle) {
+        const d = detail.data;
+        if (d.streamingLinks?.length) setStreamingLinks(d.streamingLinks);
+        if (d.characters?.length) setCharacters(d.characters);
+        if (d.themes?.length) setThemes(d.themes);
+        if (d.recommendations?.length) setRecommendations(d.recommendations);
+        if (d.bannerUrl && !anime.bannerUrl) setBannerUrl(d.bannerUrl);
+        if (d.trailerUrl && !anime.trailerUrl) setTrailerUrl(d.trailerUrl);
+      }
+    };
+
+    window.addEventListener('wanime_rich_data_updated', handleRichDataUpdated);
+
+    // 2. Se for um anime novo ou com dados antigos/incompletos, busca consolidada oficial
     setLoadingStreaming(!persisted?.streamingLinks?.length);
     setLoadingCharacters(!persisted?.characters?.length);
     setLoadingThemes(!persisted?.themes?.length);
@@ -153,6 +175,7 @@ export const CollectionAnimeModal: React.FC<CollectionAnimeModalProps> = ({
     return () => {
       isMounted = false;
       setActiveMediaUrl(null);
+      window.removeEventListener('wanime_rich_data_updated', handleRichDataUpdated);
     };
   }, [isOpen, anime, isOwner]);
 

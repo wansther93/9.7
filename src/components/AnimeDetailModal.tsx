@@ -44,7 +44,7 @@ import type { Anime, AnimeFormData, AnimeSeasonOrArc, AnimeStatus } from '../typ
 import { STATUS_CONFIG } from '../types';
 import { isAiringToday, isAnimeActiveAndAiringToday } from '../lib/dateUtils';
 import { fetchAnimeThemesMedia, type AnimeThemeMedia } from '../services/animeThemesService';
-import { getPersistedAnimeRichData, savePersistedAnimeRichData, getOrFetchAnimeRichData } from '../services/animeMetadataService';
+import { getPersistedAnimeRichData, savePersistedAnimeRichData, getOrFetchAnimeRichData, isAnimeRichDataStale } from '../services/animeMetadataService';
 import {
   getAnimeCharacters,
   getAnimeThemes,
@@ -222,7 +222,12 @@ export const AnimeDetailModal: React.FC<AnimeDetailModalProps> = ({
           if (persisted.recommendations?.length) setRecommendations(persisted.recommendations);
           if (persisted.bannerUrl && !dynamicBanner) setDynamicBanner(persisted.bannerUrl);
           setLoadingPortalExtras(false);
-          return;
+
+          // Se estiver completo e fresco (<12h), entrega instantâneo sem revalidar
+          const isComplete = (persisted.characters?.length || 0) > 0 && (persisted.themes?.length || 0) > 0;
+          if (isComplete && !isAnimeRichDataStale(persisted)) {
+            return;
+          }
         }
 
         // 2. Busca consolidada ultra-rápida (AniList GraphQL Super-Pacote + AnimeThemes + Fallback seguro)
@@ -267,10 +272,33 @@ export const AnimeDetailModal: React.FC<AnimeDetailModalProps> = ({
       }
     };
 
+    const handleLiveRichData = (e: Event) => {
+      const custom = e as CustomEvent;
+      const detail = custom.detail;
+      if (!isMounted || !detail?.data) return;
+      const matchesMalId = detail.mal_id && anime.mal_id && detail.mal_id === anime.mal_id;
+      const matchesTitle = detail.title && anime.title && detail.title.toLowerCase().trim() === anime.title.toLowerCase().trim();
+      if (matchesMalId || matchesTitle) {
+        const rd = detail.data;
+        if (rd.characters?.length) setCharacters(rd.characters);
+        if (rd.themes?.length) setMediaThemes(rd.themes);
+        if (rd.streamingLinks?.length) setStreamingLinks(rd.streamingLinks);
+        if (rd.recommendations?.length) setRecommendations(rd.recommendations);
+        if (rd.bannerUrl && !dynamicBanner) setDynamicBanner(rd.bannerUrl);
+      }
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('wanime_rich_data_updated', handleLiveRichData);
+    }
+
     resolveAndFetch();
 
     return () => {
       isMounted = false;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('wanime_rich_data_updated', handleLiveRichData);
+      }
     };
   }, [isOpen, anime?.id, anime?.mal_id, anime?.title]);
 

@@ -26,7 +26,8 @@ export interface DynamicAnimeRichData {
 }
 
 const STORAGE_PREFIX = 'wanime_rich_meta_v2_';
-const RICH_DATA_TTL = 7 * 24 * 60 * 60 * 1000; // 7 dias para dados completos
+const RICH_DATA_TTL = 7 * 24 * 60 * 60 * 1000; // 7 dias para expiração completa
+export const STALE_REVALIDATE_TTL = 12 * 60 * 60 * 1000; // 12 horas para frescor (após 12h, revalida em segundo plano sem travar 0ms)
 
 /**
  * Normaliza chave de identificação do anime para armazenamento local seguro
@@ -34,6 +35,14 @@ const RICH_DATA_TTL = 7 * 24 * 60 * 60 * 1000; // 7 dias para dados completos
 export function getAnimeStorageKey(animeIdOrTitle: number | string): string {
   const clean = String(animeIdOrTitle).trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
   return `${STORAGE_PREFIX}${clean}`;
+}
+
+/**
+ * Verifica se os dados em cache são elegíveis para revalidação suave em segundo plano
+ */
+export function isAnimeRichDataStale(data: DynamicAnimeRichData | null): boolean {
+  if (!data || !data.cachedAt) return true;
+  return Date.now() - data.cachedAt > STALE_REVALIDATE_TTL;
 }
 
 /**
@@ -299,14 +308,40 @@ async function fetchConsolidatedAniListAnimeData(
   }
 }
 
+// Controle de revalidações em andamento para não disparar chamadas duplicadas
+const pendingRevalidations = new Set<string>();
+
+/**
+ * Revalida metadados ricos em segundo plano e notifica modais abertos
+ */
+function triggerBackgroundRichDataRevalidation(
+  anime: { mal_id?: number; id?: string; title: string; trailerUrl?: string | null; bannerUrl?: string | null }
+): void {
+  const key = String(anime.mal_id || anime.title || '').trim().toLowerCase();
+  if (!key || pendingRevalidations.has(key)) return;
+
+  pendingRevalidations.add(key);
+
+  setTimeout(async () => {
+    try {
+      await getOrFetchAnimeRichData(anime, true);
+    } catch (e) {
+      console.debug('Revalidação em segundo plano ignorada:', e);
+    } finally {
+      pendingRevalidations.delete(key);
+    }
+  }, 100);
+}
+
 /**
  * Obtém os metadados ricos de um anime:
  * 1. Se já existir no armazém e for válido, retorna instantaneamente em 0ms.
- * 2. Se for novo ou incompleto, dispara a busca unificada:
+ * 2. Se for antigo (>12h), dispara revalidação silenciosa em segundo plano sem travar a tela.
+ * 3. Se for novo ou incompleto, dispara a busca unificada:
  *    - Pacote Consolidado AniList GraphQL (Personagens, Dubladores, Streaming, Trailer e Banner)
  *    - Pacote Dedicado AnimeThemes (Músicas completas com áudio)
  *    - Fallback inteligente com Jikan/Shikimori apenas para o que faltar
- * 3. Salva no armazém compartilhado apenas se contiver dados reais.
+ * 4. Salva no armazém compartilhado apenas se contiver dados reais e emite evento de sincronização.
  */
 export async function getOrFetchAnimeRichData(
   anime: { mal_id?: number; id?: string; title: string; trailerUrl?: string | null; bannerUrl?: string | null },
@@ -316,6 +351,10 @@ export async function getOrFetchAnimeRichData(
 
   // Se já existir dados completos e não for forçado, entrega instantâneo em 0ms
   if (!forceRefresh && existing && !isAnimeRichDataIncomplete(existing)) {
+    // Se o dado tiver mais de 12 horas, dispara a revalidação em segundo plano sem prender o usuário
+    if (isAnimeRichDataStale(existing)) {
+      triggerBackgroundRichDataRevalidation(anime);
+    }
     return existing;
   }
 
@@ -412,6 +451,19 @@ export async function getOrFetchAnimeRichData(
     { mal_id: malId || anime.mal_id, id: anime.id, title: anime.title },
     richData
   );
+
+  // Notifica imediatamente qualquer modal que esteja aberto na tela com os dados atualizados
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('wanime_rich_data_updated', {
+        detail: {
+          mal_id: malId || anime.mal_id,
+          title: anime.title,
+          data: richData,
+        },
+      })
+    );
+  }
 
   // Sincroniza campos essenciais no Firestore caso o anime possua ID registrado
   if (anime.id) {

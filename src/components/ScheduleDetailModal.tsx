@@ -50,6 +50,41 @@ interface ScheduleDetailModalProps {
   onOpenNewsReader?: (newsItem: AnimeNewsItem) => void;
 }
 
+// Extrai plataformas de streaming oficiais brasileiras a partir dos externalLinks já trazidos no lote da Agenda
+const extractBatchStreamingLinks = (links?: any[]): AnimeStreamingLink[] => {
+  if (!Array.isArray(links) || links.length === 0) return [];
+  const validPlatforms = [
+    { key: 'crunchyroll', name: 'Crunchyroll' },
+    { key: 'netflix', name: 'Netflix' },
+    { key: 'prime', name: 'Prime Video' },
+    { key: 'amazon', name: 'Prime Video' },
+    { key: 'disney', name: 'Disney+' },
+    { key: 'max', name: 'Max' },
+    { key: 'hbo', name: 'Max' },
+    { key: 'hidive', name: 'HIDIVE' },
+    { key: 'bilibili', name: 'Bilibili' },
+  ];
+  const list: AnimeStreamingLink[] = [];
+  const seen = new Set<string>();
+  for (const l of links) {
+    if (!l?.url) continue;
+    const siteLower = (l.site || '').toLowerCase();
+    const urlLower = l.url.toLowerCase();
+    if (siteLower.includes('youtube') || siteLower.includes('twitter') || siteLower.includes('tiktok') || siteLower.includes('official site')) {
+      continue;
+    }
+    for (const plat of validPlatforms) {
+      if ((siteLower.includes(plat.key) || urlLower.includes(plat.key)) && !seen.has(plat.name)) {
+        list.push({ name: plat.name, url: l.url });
+        seen.add(plat.name);
+        break;
+      }
+    }
+  }
+  return list;
+};
+
+// Componente do Modal de Detalhes do Anime na Agenda
 export const ScheduleDetailModal: React.FC<ScheduleDetailModalProps> = ({
   anime,
   isOpen,
@@ -95,21 +130,45 @@ export const ScheduleDetailModal: React.FC<ScheduleDetailModalProps> = ({
     if (!isOpen || !anime) return;
 
     let isMounted = true;
-    setLoadingStreaming(true);
-    setLoadingNews(true);
     setAddedJustNow(false);
     setIsSynopsisExpanded(false);
     setShowFinalEpInfo(false);
     setBannerUrl(anime.bannerUrl || null);
-    setLiveDetails(null);
+
+    // 1. APROVEITAMENTO IMEDIATO DE TODOS OS DADOS DO LOTE (0ms):
+    // Preenche status, episódios, estúdio, dia e horários que já vieram da listagem em lote
+    setLiveDetails({
+      status: anime.status,
+      totalEpisodes: anime.episodes,
+      bannerUrl: anime.bannerUrl || null,
+      studio: anime.studio || null,
+      broadcastDay: anime.broadcastDay || null,
+      broadcastTime: anime.broadcastTime || null,
+      nextEpisode: anime.nextEpisode || null,
+    });
+
+    // 2. Extrai instantaneamente plataformas oficiais de streaming já presentes nos externalLinks do lote
+    const batchStreams = extractBatchStreamingLinks((anime as any).externalLinks);
+    if (batchStreams.length > 0) {
+      setStreamingLinks(batchStreams);
+      setLoadingStreaming(false);
+    } else {
+      setStreamingLinks([]);
+      setLoadingStreaming(true);
+    }
+
+    setLoadingNews(true);
 
     const malId = anime.idMal || anime.id;
 
-    // Sincroniza metadados oficiais automaticamente da API (AniList / Jikan) para precisão absoluta de status e episódios da obra
+    // Sincroniza metadados oficiais automaticamente em segundo plano para captar novidades frescas
     fetchFreshAnimeDetails(anime.title, malId)
       .then((data) => {
         if (!isMounted || !data) return;
-        setLiveDetails(data);
+        setLiveDetails((prev) => ({
+          ...prev,
+          ...data,
+        }));
         if (data.bannerUrl) {
           setBannerUrl(data.bannerUrl);
           if (existingUserAnime && !existingUserAnime.bannerUrl && existingUserAnime.id) {
@@ -134,13 +193,21 @@ export const ScheduleDetailModal: React.FC<ScheduleDetailModalProps> = ({
     }
 
     // Busca streaming oficial no Brasil com cascata multi-API (AniList + Jikan + Shikimori)
+    // Se já tiver vindo no lote, apenas complementa/atualiza sem bloquear a tela
     getAggregatedStreamingLinks(malId, anime.title)
       .then((links) => {
         if (isMounted) {
           const sanitized = links.filter(
             (l) => !l.name.toLowerCase().includes('youtube') && !l.url.toLowerCase().includes('youtube')
           );
-          setStreamingLinks(sanitized);
+          if (sanitized.length > 0) {
+            setStreamingLinks((prev) => {
+              const map = new Map<string, AnimeStreamingLink>();
+              prev.forEach((p) => map.set(p.name, p));
+              sanitized.forEach((s) => map.set(s.name, s));
+              return Array.from(map.values());
+            });
+          }
           setLoadingStreaming(false);
         }
       })
