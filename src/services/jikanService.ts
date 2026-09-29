@@ -525,9 +525,9 @@ const scheduleCache = new Map<string, { data: ScheduleAnimeItem[]; timestamp: nu
 const seasonCache = new Map<string, { data: ScheduleAnimeItem[]; timestamp: number }>();
 const CACHE_TTL = 1000 * 60 * 15; // 15 minutos de cache
 
-const LOCAL_SEASON_NOW_KEY = 'wanime_season_now_v6';
-const LOCAL_SEASON_UPCOMING_KEY = 'wanime_season_upcoming_v6';
-const LOCAL_SCHEDULE_KEY_PREFIX = 'wanime_schedule_v6_';
+const LOCAL_SEASON_NOW_KEY = 'wanime_season_now_v7';
+const LOCAL_SEASON_UPCOMING_KEY = 'wanime_season_upcoming_v7';
+const LOCAL_SCHEDULE_KEY_PREFIX = 'wanime_schedule_v7_';
 
 /**
  * Limpa caches legados e desatualizados do localStorage para evitar leituras fantasmas
@@ -541,16 +541,21 @@ export function purgeLegacyScheduleCaches() {
       const key = localStorage.key(i);
       if (
         key &&
-        (key.startsWith('wanime_schedule_v') ||
-          key.startsWith('wanime_season_now_v') ||
-          key.startsWith('wanime_season_upcoming_v')) &&
-        !key.includes('_v6')
+        (key.startsWith('wanime_schedule') ||
+          key.startsWith('wanime_season_now') ||
+          key.startsWith('wanime_season_upcoming')) &&
+        !key.includes('_v7')
       ) {
         keysToRemove.push(key);
       }
     }
     keysToRemove.forEach((k) => localStorage.removeItem(k));
   } catch {}
+}
+
+// Executa purga imediata de versões velhas do cache ao inicializar o módulo
+if (typeof window !== 'undefined') {
+  purgeLegacyScheduleCaches();
 }
 
 /**
@@ -580,6 +585,10 @@ export function getCachedSeasonNow(): ScheduleAnimeItem[] | null {
         seasonCache.set('season_now', parsed);
         return parsed.data;
       }
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        seasonCache.set('season_now', { data: parsed, timestamp: Date.now() });
+        return parsed;
+      }
     }
   } catch {}
   return null;
@@ -596,6 +605,10 @@ export function getCachedSeasonUpcoming(): ScheduleAnimeItem[] | null {
       if (Array.isArray(parsed?.data) && parsed.data.length > 0) {
         seasonCache.set('season_upcoming', parsed);
         return parsed.data;
+      }
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        seasonCache.set('season_upcoming', { data: parsed, timestamp: Date.now() });
+        return parsed;
       }
     }
   } catch {}
@@ -941,19 +954,21 @@ export const getWeeklySchedule = async (dayPt?: string): Promise<ScheduleAnimeIt
  * Busca animes populares da temporada atual (AniList GraphQL -> Jikan API -> Kitsu)
  * Escopo expandido para até 150 produções ativas (mainstream + nicho + shorts), 100% SFW e sem travamento
  */
-export const getSeasonNowAnimes = async (): Promise<ScheduleAnimeItem[]> => {
+export const getSeasonNowAnimes = async (force: boolean = false): Promise<ScheduleAnimeItem[]> => {
   const cacheKey = 'season_now';
-  const cached = seasonCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    return cached.data;
-  }
+  if (!force) {
+    const cached = seasonCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      return cached.data;
+    }
 
-  // Tenta carregar do cache local persistente para 0ms de espera
-  const localCached = getCachedSeasonNow();
-  if (localCached && localCached.length > 0) {
-    const savedTs = typeof window !== 'undefined' ? Number(localStorage.getItem(`${LOCAL_SEASON_NOW_KEY}_ts`) || '0') : 0;
-    if (Date.now() - savedTs < CACHE_TTL) {
-      return localCached;
+    // Tenta carregar do cache local persistente para 0ms de espera
+    const localCached = getCachedSeasonNow();
+    if (localCached && localCached.length > 0) {
+      const savedTs = typeof window !== 'undefined' ? Number(localStorage.getItem(`${LOCAL_SEASON_NOW_KEY}_ts`) || '0') : 0;
+      if (Date.now() - savedTs < CACHE_TTL) {
+        return localCached;
+      }
     }
   }
 
@@ -1179,23 +1194,25 @@ export const getSeasonNowAnimes = async (): Promise<ScheduleAnimeItem[]> => {
  * Busca animes confirmados para a próxima temporada e produções futuras (AniList GraphQL -> Jikan Seasons Upcoming)
  * Escopo de até 150 obras confirmadas (englobando filmes de One Piece e lançamentos até anos futuros), 100% SFW e com cache instantâneo
  */
-export const getSeasonUpcomingAnimes = async (): Promise<ScheduleAnimeItem[]> => {
+export const getSeasonUpcomingAnimes = async (force: boolean = false): Promise<ScheduleAnimeItem[]> => {
   const cacheKey = 'season_upcoming';
-  const cached = seasonCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    return cached.data;
-  }
+  if (!force) {
+    const cached = seasonCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      return cached.data;
+    }
 
-  // Tenta carregar do cache local persistente para 0ms de espera
-  const localCached = getCachedSeasonUpcoming();
-  if (localCached && localCached.length > 0) {
-    const savedTs = typeof window !== 'undefined' ? Number(localStorage.getItem(`${LOCAL_SEASON_UPCOMING_KEY}_ts`) || '0') : 0;
-    if (Date.now() - savedTs < CACHE_TTL) {
-      return localCached;
+    // Tenta carregar do cache local persistente para 0ms de espera
+    const localCached = getCachedSeasonUpcoming();
+    if (localCached && localCached.length > 0) {
+      const savedTs = typeof window !== 'undefined' ? Number(localStorage.getItem(`${LOCAL_SEASON_UPCOMING_KEY}_ts`) || '0') : 0;
+      if (Date.now() - savedTs < CACHE_TTL) {
+        return localCached;
+      }
     }
   }
 
-  // 1. Tenta AniList GraphQL primeiro (Upcoming - 3 páginas paralelas de 50 = até 150 obras, isAdult: false obrigatório)
+  // 1. Tenta AniList GraphQL primeiro (Upcoming - 5 páginas paralelas de 50 = até 250 obras japonesas TV/ONA/Movie/OVA, 100% SFW)
   try {
     const buildQuery = (page: number, perPage: number = 50) => `
       query {
@@ -1233,7 +1250,7 @@ export const getSeasonUpcomingAnimes = async (): Promise<ScheduleAnimeItem[]> =>
       }
     `;
 
-    const [res1, res2, res3] = await Promise.all([
+    const [res1, res2, res3, res4, res5] = await Promise.all([
       fetch('https://graphql.anilist.co', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -1248,6 +1265,16 @@ export const getSeasonUpcomingAnimes = async (): Promise<ScheduleAnimeItem[]> =>
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({ query: buildQuery(3, 50) }),
+      }),
+      fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ query: buildQuery(4, 50) }),
+      }),
+      fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ query: buildQuery(5, 50) }),
       }),
     ]);
 
@@ -1266,6 +1293,16 @@ export const getSeasonUpcomingAnimes = async (): Promise<ScheduleAnimeItem[]> =>
       const json3 = await res3.json();
       const p3 = json3?.data?.Page?.media || [];
       if (Array.isArray(p3)) list.push(...p3);
+    }
+    if (res4.ok) {
+      const json4 = await res4.json();
+      const p4 = json4?.data?.Page?.media || [];
+      if (Array.isArray(p4)) list.push(...p4);
+    }
+    if (res5.ok) {
+      const json5 = await res5.json();
+      const p5 = json5?.data?.Page?.media || [];
+      if (Array.isArray(p5)) list.push(...p5);
     }
 
     // Filtro secundário rigoroso contra qualquer conteúdo adulto/hentai

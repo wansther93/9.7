@@ -24,6 +24,7 @@ import {
   getCachedWeeklySchedule,
   getCachedSeasonNow,
   getCachedSeasonUpcoming,
+  purgeLegacyScheduleCaches,
   detectBrazilStreaming,
   type ScheduleAnimeItem, 
   type DayOfWeek 
@@ -407,54 +408,36 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
 
     window.addEventListener(SCHEDULE_UPDATED_EVENT, handleScheduleBackgroundUpdate);
 
-    // Se a temporada atual ainda não tiver em memória, preenche do cache local ou busca uma vez
+    // Preenche inicialmente com cache para 0ms de espera visual
     if (seasonNowList.length === 0) {
       const localNow = getCachedSeasonNow();
       if (localNow && localNow.length > 0) {
         setSeasonNowList(localNow);
-      } else {
-        setIsFetchingSeasonNow(true);
-        getAggregatedSeasonNowAnimes()
-          .then((data) => {
-            if (isMounted && data && data.length > 0) {
-              setSeasonNowList(data);
-            }
-          })
-          .catch((err) => console.warn('Prefetch temporada atual:', err))
-          .finally(() => {
-            if (isMounted) setIsFetchingSeasonNow(false);
-          });
       }
     }
-
-    // Se a próxima temporada ainda não tiver em memória, preenche do cache local ou busca uma vez
     if (seasonUpcomingList.length === 0) {
       const localUp = getCachedSeasonUpcoming();
       if (localUp && localUp.length > 0) {
         setSeasonUpcomingList(localUp);
-      } else {
-        const timerUpcoming = setTimeout(() => {
-          if (!isMounted) return;
-          setIsFetchingSeasonUpcoming(true);
-          getAggregatedUpcomingAnimes()
-            .then((data) => {
-              if (isMounted && data && data.length > 0) {
-                setSeasonUpcomingList(data);
-              }
-            })
-            .catch((err) => console.warn('Prefetch próxima temporada:', err))
-            .finally(() => {
-              if (isMounted) setIsFetchingSeasonUpcoming(false);
-            });
-        }, 500);
-
-        return () => {
-          isMounted = false;
-          clearTimeout(timerUpcoming);
-          window.removeEventListener(SCHEDULE_UPDATED_EVENT, handleScheduleBackgroundUpdate);
-        };
       }
     }
+
+    // Dispara sincronização em segundo plano para garantir dados frescos da API
+    runBackgroundScheduleSync(false, userAnimes).then((syncRes) => {
+      if (!isMounted) return;
+      if (syncRes.activeSeasonNow && syncRes.activeSeasonNow.length > 0) {
+        setSeasonNowList(syncRes.activeSeasonNow);
+      }
+      if (syncRes.cleanUpcoming && syncRes.cleanUpcoming.length > 0) {
+        setSeasonUpcomingList(syncRes.cleanUpcoming);
+      }
+      if (syncRes.activeWeekly && syncRes.activeWeekly.length > 0) {
+        const filtered = syncRes.activeWeekly.filter(
+          (item) => item.broadcastDay === selectedDay || item.broadcastDay?.startsWith(selectedDay)
+        );
+        if (filtered.length > 0) setScheduleList(filtered);
+      }
+    }).catch(() => {});
 
     return () => {
       isMounted = false;
@@ -543,19 +526,21 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     };
   }, [mainTab, selectedDay]);
 
-  // Se o usuário entrar na aba e ela estiver vazia, busca na rede com redundância tripla
+  // Se o usuário entrar na aba de temporada, exibe cache temporário se vazio (0ms) e SEMPRE busca dados frescos na API
   useEffect(() => {
     if (mainTab !== 'season') return;
     let isMounted = true;
 
-    if (seasonSubTab === 'now' && seasonNowList.length === 0) {
-      const cached = getCachedSeasonNow();
-      if (cached && cached.length > 0) {
-        setSeasonNowList(cached);
-        return;
+    if (seasonSubTab === 'now') {
+      if (seasonNowList.length === 0) {
+        const cached = getCachedSeasonNow();
+        if (cached && cached.length > 0) {
+          setSeasonNowList(cached);
+        } else {
+          setIsFetchingSeasonNow(true);
+        }
       }
-      setIsFetchingSeasonNow(true);
-      getAggregatedSeasonNowAnimes()
+      getAggregatedSeasonNowAnimes(true)
         .then((data) => {
           if (isMounted && data && data.length > 0) setSeasonNowList(data);
         })
@@ -563,14 +548,16 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
         .finally(() => {
           if (isMounted) setIsFetchingSeasonNow(false);
         });
-    } else if (seasonSubTab === 'upcoming' && seasonUpcomingList.length === 0) {
-      const cached = getCachedSeasonUpcoming();
-      if (cached && cached.length > 0) {
-        setSeasonUpcomingList(cached);
-        return;
+    } else if (seasonSubTab === 'upcoming') {
+      if (seasonUpcomingList.length === 0) {
+        const cached = getCachedSeasonUpcoming();
+        if (cached && cached.length > 0) {
+          setSeasonUpcomingList(cached);
+        } else {
+          setIsFetchingSeasonUpcoming(true);
+        }
       }
-      setIsFetchingSeasonUpcoming(true);
-      getAggregatedUpcomingAnimes()
+      getAggregatedUpcomingAnimes(true)
         .then((data) => {
           if (isMounted && data && data.length > 0) setSeasonUpcomingList(data);
         })
@@ -583,7 +570,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [mainTab, seasonSubTab, seasonNowList.length, seasonUpcomingList.length]);
+  }, [mainTab, seasonSubTab]);
 
   // Determina se a tela atual está vazia e aguardando primeira carga (apenas se não houver dados em cache)
   const isCurrentTabEmptyAndLoading = useMemo(() => {

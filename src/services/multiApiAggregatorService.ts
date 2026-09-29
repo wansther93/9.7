@@ -21,12 +21,12 @@ import {
   fetchShikimoriCharacters,
   fetchShikimoriExternalLinks,
 } from './shikimoriService';
-import { reconcileScheduleLifecycle, hasAnimeConcludedSeason } from './scheduleLifecycleService';
+import { reconcileScheduleLifecycle, hasAnimeConcludedSeason, isAnimeInWeeklyHiatus } from './scheduleLifecycleService';
 import type { Anime } from '../types';
 
-const LOCAL_SEASON_NOW_KEY = 'wanime_season_now_v6';
-const LOCAL_SEASON_UPCOMING_KEY = 'wanime_season_upcoming_v6';
-const LOCAL_SCHEDULE_KEY_PREFIX = 'wanime_schedule_v6_';
+const LOCAL_SEASON_NOW_KEY = 'wanime_season_now_v7';
+const LOCAL_SEASON_UPCOMING_KEY = 'wanime_season_upcoming_v7';
+const LOCAL_SCHEDULE_KEY_PREFIX = 'wanime_schedule_v7_';
 const SCHEDULE_BACKGROUND_SYNC_TS = 'wanime_bg_schedule_sync_ts';
 const KNOWN_SCHEDULE_IDS_KEY = 'wanime_known_schedule_ids_v1';
 
@@ -38,7 +38,7 @@ const multiCharCache = new Map<string, { data: AnimeCharacterItem[]; timestamp: 
 const multiStreamCache = new Map<string, { data: AnimeStreamingLink[]; timestamp: number }>();
 
 const CACHE_TTL = 30 * 60 * 1000; // 30 minutos
-const BG_SYNC_INTERVAL = 10 * 60 * 1000; // 10 minutos para verificação silenciosa na inicialização
+const BG_SYNC_INTERVAL = 30 * 1000; // 30 segundos (não bloqueia novidades)
 
 /**
  * 1. Calendário Semanal Agregado (AniList -> Jikan -> Shikimori)
@@ -86,6 +86,9 @@ export async function getAggregatedWeeklySchedule(dayPt?: string, force = false)
 
 /**
  * 2. Próxima Temporada e Futuros Agregados (AniList -> Jikan -> Shikimori)
+ * - Puxa até 250 obras futuras confirmadas (TV, Movie, ONA, OVA).
+ * - Identifica animes contínuos em hiato (>14 dias) que possuem episódio futuro agendado (ex: One Piece 95 dias) e mescla automaticamente.
+ * - Animes finalizados ou em hiato sem previsão futura (ex: Hunter x Hunter) não são incluídos.
  */
 export async function getAggregatedUpcomingAnimes(force = false): Promise<ScheduleAnimeItem[]> {
   const cacheKey = 'upcoming_all';
@@ -98,7 +101,7 @@ export async function getAggregatedUpcomingAnimes(force = false): Promise<Schedu
 
   let items: ScheduleAnimeItem[] = [];
   try {
-    items = await fetchJikanOrAniListUpcoming();
+    items = await fetchJikanOrAniListUpcoming(force);
   } catch (err) {
     console.warn('Falha em AniList/Jikan upcoming, acionando Shikimori...', err);
   }
@@ -115,8 +118,42 @@ export async function getAggregatedUpcomingAnimes(force = false): Promise<Schedu
     }
   }
 
+  // Mescla animes contínuos ativos que entraram em hiato (>14 dias), mas que possuem retorno/episódio futuro confirmado (ex: One Piece)
+  try {
+    const seasonNowRaw = await fetchJikanOrAniListSeasonNow(force).catch(() => []);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const existingIds = new Set(items.map((i) => i.id));
+
+    const hiatusWithFutureEpisodes = seasonNowRaw.filter((item) => {
+      if (!isAnimeInWeeklyHiatus(item)) return false;
+      // Validação estrita: somente obras que possuem próximo episódio agendado com timestamp futuro
+      if (item.nextEpisode?.airingAt && item.nextEpisode.airingAt > nowSec) return true;
+      if (item.startDate?.year && item.startDate.year >= new Date().getFullYear()) return true;
+      return false;
+    });
+
+    for (const hItem of hiatusWithFutureEpisodes) {
+      if (!existingIds.has(hItem.id)) {
+        items.unshift({
+          ...hItem,
+          status: 'Not yet aired',
+          broadcastDay: 'Em breve',
+        });
+        existingIds.add(hItem.id);
+      }
+    }
+  } catch (err) {
+    console.warn('Erro ao mesclar animes em hiato com episódios futuros em Próxima Temporada:', err);
+  }
+
   if (items.length > 0) {
     multiUpcomingCache.set(cacheKey, { data: items, timestamp: Date.now() });
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem(LOCAL_SEASON_UPCOMING_KEY, JSON.stringify({ data: items, timestamp: Date.now() }));
+        localStorage.setItem(`${LOCAL_SEASON_UPCOMING_KEY}_ts`, String(Date.now()));
+      } catch {}
+    }
   }
   return items;
 }
@@ -136,7 +173,7 @@ export async function getAggregatedSeasonNowAnimes(force = false): Promise<Sched
 
   let items: ScheduleAnimeItem[] = [];
   try {
-    items = await fetchJikanOrAniListSeasonNow();
+    items = await fetchJikanOrAniListSeasonNow(force);
   } catch (err) {
     console.warn('Falha em AniList/Jikan season now, acionando Shikimori...', err);
   }
