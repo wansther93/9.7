@@ -558,7 +558,12 @@ export function reconcileScheduleLifecycle(
       activeSeasonNowMap.set(promotedItem.id, promotedItem);
     } else {
       // Se não começou (data futura, indefinida ou hiato com retorno): PERMANECE em Próxima Temporada!
-      upcomingMap.set(item.id, item);
+      const existing = upcomingMap.get(item.id);
+      if (!existing) {
+        upcomingMap.set(item.id, item);
+      } else if (!existing.nextEpisode && item.nextEpisode) {
+        upcomingMap.set(item.id, { ...existing, nextEpisode: item.nextEpisode });
+      }
     }
   }
 

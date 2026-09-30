@@ -461,11 +461,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
         setSeasonUpcomingList(syncResult.cleanUpcoming);
       }
 
-      // Atualiza o dia selecionado atualmente com dados frescos da API
-      const freshWeekly = await getAggregatedWeeklySchedule(selectedDay, true);
-      if (freshWeekly && freshWeekly.length > 0) {
-        setScheduleList(freshWeekly);
-      } else if (syncResult.activeWeekly && syncResult.activeWeekly.length > 0) {
+      if (syncResult.activeWeekly && syncResult.activeWeekly.length > 0) {
         const filtered = syncResult.activeWeekly.filter(
           (item) => item.broadcastDay === selectedDay || item.broadcastDay?.startsWith(selectedDay)
         );
@@ -526,7 +522,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     };
   }, [mainTab, selectedDay]);
 
-  // Se o usuário entrar na aba de temporada, exibe cache temporário se vazio (0ms) e SEMPRE busca dados frescos na API
+  // Se o usuário entrar na aba de temporada, exibe cache instantâneo e só busca na rede se a lista estiver vazia
   useEffect(() => {
     if (mainTab !== 'season') return;
     let isMounted = true;
@@ -538,16 +534,16 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
           setSeasonNowList(cached);
         } else {
           setIsFetchingSeasonNow(true);
+          getAggregatedSeasonNowAnimes(false)
+            .then((data) => {
+              if (isMounted && data && data.length > 0) setSeasonNowList(data);
+            })
+            .catch((err) => console.error('Erro ao carregar animes da temporada:', err))
+            .finally(() => {
+              if (isMounted) setIsFetchingSeasonNow(false);
+            });
         }
       }
-      getAggregatedSeasonNowAnimes(true)
-        .then((data) => {
-          if (isMounted && data && data.length > 0) setSeasonNowList(data);
-        })
-        .catch((err) => console.error('Erro ao carregar animes da temporada:', err))
-        .finally(() => {
-          if (isMounted) setIsFetchingSeasonNow(false);
-        });
     } else if (seasonSubTab === 'upcoming') {
       if (seasonUpcomingList.length === 0) {
         const cached = getCachedSeasonUpcoming();
@@ -555,22 +551,22 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
           setSeasonUpcomingList(cached);
         } else {
           setIsFetchingSeasonUpcoming(true);
+          getAggregatedUpcomingAnimes(false)
+            .then((data) => {
+              if (isMounted && data && data.length > 0) setSeasonUpcomingList(data);
+            })
+            .catch((err) => console.error('Erro ao carregar próximas estreias:', err))
+            .finally(() => {
+              if (isMounted) setIsFetchingSeasonUpcoming(false);
+            });
         }
       }
-      getAggregatedUpcomingAnimes(true)
-        .then((data) => {
-          if (isMounted && data && data.length > 0) setSeasonUpcomingList(data);
-        })
-        .catch((err) => console.error('Erro ao carregar próximas estreias:', err))
-        .finally(() => {
-          if (isMounted) setIsFetchingSeasonUpcoming(false);
-        });
     }
 
     return () => {
       isMounted = false;
     };
-  }, [mainTab, seasonSubTab]);
+  }, [mainTab, seasonSubTab, seasonNowList.length, seasonUpcomingList.length]);
 
   // Determina se a tela atual está vazia e aguardando primeira carga (apenas se não houver dados em cache)
   const isCurrentTabEmptyAndLoading = useMemo(() => {

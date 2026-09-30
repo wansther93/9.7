@@ -13,6 +13,7 @@ import {
   getAnimeStreamingLinks as fetchJikanOrAniListStreaming,
   normalizeBrazilStreaming,
   purgeLegacyScheduleCaches,
+  getCachedSeasonNow,
 } from './jikanService';
 import {
   fetchShikimoriSchedule,
@@ -120,7 +121,10 @@ export async function getAggregatedUpcomingAnimes(force = false): Promise<Schedu
 
   // Mescla animes contínuos ativos que entraram em hiato (>14 dias), mas que possuem retorno/episódio futuro confirmado (ex: One Piece)
   try {
-    const seasonNowRaw = await fetchJikanOrAniListSeasonNow(force).catch(() => []);
+    let seasonNowRaw = await fetchJikanOrAniListSeasonNow(force).catch(() => []);
+    if (!seasonNowRaw || seasonNowRaw.length === 0) {
+      seasonNowRaw = getCachedSeasonNow() || [];
+    }
     const nowSec = Math.floor(Date.now() / 1000);
     const existingIds = new Set(items.map((i) => i.id));
 
@@ -265,12 +269,6 @@ export async function runBackgroundScheduleSync(force = false, userAnimes: Anime
   // Evita requisições repetidas se já foi sincronizado recentemente, exceto se forçado pelo usuário
   if (!force && now - lastSync < BG_SYNC_INTERVAL) {
     return { success: true, newAnimesCount: 0, totalAnimesCount: 0, activeWeekly: [], activeSeasonNow: [], cleanUpcoming: [] };
-  }
-
-  if (force) {
-    multiScheduleCache.clear();
-    multiUpcomingCache.clear();
-    multiSeasonNowCache.clear();
   }
 
   isBgSyncRunning = true;

@@ -847,7 +847,22 @@ export const getWeeklySchedule = async (dayPt?: string): Promise<ScheduleAnimeIt
     if (response.ok) {
       const json = await response.json();
       if (Array.isArray(json.data) && json.data.length > 0) {
-        const mapped: ScheduleAnimeItem[] = json.data.map((item: any) => {
+        // FILTRO RÍGIDO: Descarta animes históricos já finalizados (como Attack on Titan, MHA encerrado, etc.)
+        const activeOnly = json.data.filter((item: any) => {
+          const st = (item.status || '').toLowerCase().trim();
+          if (st.includes('finish') || st.includes('completed') || st === 'finished airing') {
+            return false;
+          }
+          if (item.aired?.to) {
+            const toDate = new Date(item.aired.to).getTime();
+            if (!isNaN(toDate) && Date.now() - toDate > 24 * 60 * 60 * 1000) {
+              return false;
+            }
+          }
+          return true;
+        });
+
+        const mapped: ScheduleAnimeItem[] = activeOnly.map((item: any) => {
           const rawGenres: string[] = [
             ...(item.genres || []).map((g: any) => g.name),
             ...(item.themes || []).map((t: any) => t.name),
